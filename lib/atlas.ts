@@ -202,3 +202,24 @@ export function starterNodes(): Metric[] {
     key:'', target:0, actual:0, x:0, y:0,
   }];
 }
+
+export function sampleBoard(date: ReturnType<typeof today>): Board {
+  const fraction = monthInfo(date.month, date).fraction;
+  const [starter] = starterNodes();
+  const root: Metric = {
+    ...starter, name:'体験教室の申込数', target:40, source:'sum', sumIds:['web','event'],
+  };
+  const child = (id: string, parent: string, name: string, target: number, forecast: number, yieldPercent?: number): Metric => ({
+    ...starter, id, parent, name, target, actual:Math.round(forecast * fraction), yieldPercent,
+  });
+  return {
+    ...emptyBoard(),
+    months:{[date.month]:[
+      root,
+      child('web', root.id, 'Web経由の申込', 24, 28),
+      child('event', root.id, 'イベント経由の申込', 16, 10),
+      child('inquiries', 'web', 'Webの問い合わせ', 0, 110, 25),
+      child('visits', 'inquiries', '案内ページの訪問', 0, 1020, 10),
+    ]},
+  };
+}

@@ -30,6 +30,10 @@ main{max-width:1800px;margin:0 auto;padding:27px 32px 25px}.overview-head{displa
 
 .canvas-lock{display:flex;align-items:center;gap:4px;padding:0 5px 0 4px;color:var(--muted);font-size:10px;white-space:nowrap}
 
+.sample-controls { margin-top: 12px; }
+.sample-controls .button { min-height: 34px; }
+.sample-controls p { margin-top: 6px; color: var(--muted); }
+
 .sum-fields {
   display: grid;
   gap: 7px;

@@ -6,7 +6,7 @@ import {
   Plus, Redo2, RefreshCw, ScanLine, Target, Undo2, X, Zap, Pencil, TriangleAlert,
   Layers3, CalendarClock, CornerDownRight, Crosshair, Network, CircleDot, CloudCheck, Lock, Sigma,
 } from 'lucide-react';
-import {boardSchema,emptyBoard,fmt,H,monthInfo,nextMonth,performance,requiredForYield,resolveActuals,resolveTargets,signed,starterNodes,sumActual,sumUnitFactor,today,toneLabel,usesYieldTarget,W,yieldSettingsError} from '../lib/atlas';
+import {boardSchema,emptyBoard,fmt,H,monthInfo,nextMonth,performance,requiredForYield,resolveActuals,resolveTargets,sampleBoard,signed,starterNodes,sumActual,sumUnitFactor,today,toneLabel,usesYieldTarget,W,yieldSettingsError} from '../lib/atlas';
 import type {Board,Metric,Tone} from '../lib/atlas';
 import { BRANCH_RUN, layoutTree, placeTreeNode, planTreeDrop } from '../lib/tree-layout';
 import {addChannelCards,readChannelMetrics} from '../lib/channel-sync';
@@ -44,12 +44,29 @@ function PaceBar({actual,expected,tone}:{actual:number;expected:number;tone:Tone
 }
 
 export default function Atlas() {
+  const [sample,setSample]=useState(false);
+  const [personalMonth,setPersonalMonth]=useState(()=>today().month);
+  return <AtlasWorkspace
+    key={sample?'sample':'personal'}
+    sample={sample}
+    initialMonth={sample?undefined:personalMonth}
+    onMonthChange={sample?undefined:setPersonalMonth}
+    onSwitchWorkspace={()=>setSample(current=>!current)}
+  />;
+}
+
+function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
+  sample: boolean;
+  initialMonth?: string;
+  onMonthChange?: (month: string) => void;
+  onSwitchWorkspace: () => void;
+}) {
   const [date,setDate]=useState(()=>today());
-  const [month,setMonth]=useState(()=>today().month);
-  const [board,setBoard]=useState<Board>(emptyBoard);
+  const [month,setMonth]=useState(initialMonth ?? date.month);
+  const [board,setBoard]=useState<Board>(()=>sample?sampleBoard(date):emptyBoard());
   const state=useRef(board);
   const [selected,setSelected]=useState<string|null>(null);
-  const [save,setSave]=useState<SaveStatus>('loading');
+  const [save,setSave]=useState<SaveStatus>(sample?'saved':'loading');
   const [feedUrl,setFeedUrl]=useState('');
   const [feedDraft,setFeedDraft]=useState('');
   const configured=Boolean(feedUrl);
@@ -127,22 +144,27 @@ export default function Atlas() {
   useEffect(()=>{
     const timer=setInterval(()=>setDate(today()),30000);
     try {
-      const saved=window.localStorage.getItem(boardStorageKey);
-      if(saved) {
-        const stored=boardSchema.parse(JSON.parse(saved));
-        state.current=stored;
-        setBoard(stored);
+      if(!sample) {
+        const saved=window.localStorage.getItem(boardStorageKey);
+        if(saved) {
+          const stored=boardSchema.parse(JSON.parse(saved));
+          state.current=stored;
+          setBoard(stored);
+        }
+        const savedFeed=window.localStorage.getItem(feedStorageKey)??'';
+        setFeedUrl(savedFeed);
+        setFeedDraft(savedFeed);
       }
-      const savedFeed=window.localStorage.getItem(feedStorageKey)??'';
-      setFeedUrl(savedFeed);
-      setFeedDraft(savedFeed);
       initialized.current=true;
       setSave('saved');
     }catch {
       setSave('error');
     }
-    return ()=>clearInterval(timer);
-  },[]);
+    return ()=>{
+      initialized.current=false;
+      clearInterval(timer);
+    };
+  },[sample]);
   useEffect(()=>{if(!toast)return;const t=setTimeout(()=>setToast(''),3600);return()=>clearTimeout(t);},[toast]);
   useEffect(()=>{
     const close=(e:KeyboardEvent)=>{if(e.key==='Escape'){setPanel(null);setSelected(null);setEditing(null);setDeleteOpen(false);}};
@@ -151,14 +173,14 @@ export default function Atlas() {
   },[]);
 
   const write=useCallback((b:Board)=>{
-    if(!initialized.current)return;
+    if(sample||!initialized.current)return;
     try {
       window.localStorage.setItem(boardStorageKey,JSON.stringify(b));
       setSave('saved');
     }catch {
       setSave('error');
     }
-  },[]);
+  },[sample]);
   const change=useCallback((b:Board,history=true)=>{
     if(!initialized.current){setToast('ブラウザの保存先を読み込んでから編集できます。');return;}
     if(history){const prior=state.current;setPast(p=>[...p.slice(-39),prior]);setFuture([]);}
@@ -187,6 +209,7 @@ export default function Atlas() {
   }
   function switchMonth(m:string) {
     if(m===month||m<'2000-01'||m>'2099-12')return;
+    onMonthChange?.(m);
     drag.current=null;setMonth(m);pick(null);setEditing(null);setDragging(null);setPanning(false);
   }
   const fit=useCallback((list:Metric[])=>{
@@ -462,9 +485,9 @@ export default function Atlas() {
       <span className="header-divider"/><div className="breadcrumb">ワークスペース <ChevronRight size={12}/> <strong>KPIツリー</strong></div>
       <div className="top-actions">
         <div className="save-state" role="status">
-          {save==='error'?<button onClick={retry}>{statusText[save]}</button>:<><span className={save==='saved'?'saved-dot':'waiting-dot'}/>{statusText[save]}</>}
+          {sample?'サンプルモード':save==='error'?<button onClick={retry}>{statusText[save]}</button>:<><span className={save==='saved'?'saved-dot':'waiting-dot'}/>{statusText[save]}</>}
         </div>
-        <button className="button secondary sync-button" onClick={()=>setPanel('sync')}><Database size={iconSize}/>データ連携{configured&&<span className="saved-dot"/>}</button>
+        {!sample&&<button className="button secondary sync-button" onClick={()=>setPanel('sync')}><Database size={iconSize}/>データ連携{configured&&<span className="saved-dot"/>}</button>}
         <button className="icon-button help-button" aria-label="使い方" onClick={()=>setPanel('help')}><CircleHelp size={19}/></button>
       </div>
     </header>
@@ -475,6 +498,12 @@ export default function Atlas() {
             <div className="eyebrow"><span/> MONTHLY PERFORMANCE</div>
             <h1>月間KPIツリー</h1>
             <p>目標へのペースを見渡し、次に手を打つべき指標を見つける。</p>
+            <div className="sample-controls">
+              <button type="button" className="button secondary" onClick={onSwitchWorkspace}>
+                {sample?'自分のツリーに戻る':'サンプルを見る'}
+              </button>
+              {sample&&<p>架空の体験教室のツリーです。ここでの編集はサンプルを閉じるとリセットされます。</p>}
+            </div>
           </div>
           <div className="month-section">
             <div className="month-picker">
@@ -637,7 +666,7 @@ export default function Atlas() {
                   }}>
                     <option value="manual">手動入力</option>
                     <option value="sum">選択して合算</option>
-                    <option value="api">外部API連携</option>
+                    {!sample&&<option value="api">外部API連携</option>}
                   </select>
                 </label>
                 {draftManualActual&&<label>実績<input type="number" min="0" max={1e12} step="any" required value={Number.isNaN(draft.actual)?'':draft.actual} onChange={e=>setDraft({...draft,actual:e.target.valueAsNumber})}/></label>}
@@ -665,10 +694,10 @@ export default function Atlas() {
                     <strong>{sumPreview?.ok&&sumPreview.value!==null?fmt(sumPreview.value)+(sumDraft.unit?' '+sumDraft.unit:''):'—'}</strong>
                   </output>
                 </fieldset>}
-                <label className="channel-sync-option">
+                {!sample&&<label className="channel-sync-option">
                   <input type="checkbox" checked={Boolean(draft.channelSync)} onChange={e=>setDraft({...draft,channelSync:e.target.checked})}/>
                   <span>連携先の内訳KPIを自動追加</span>
-                </label>
+                </label>}
                 {selectedNode.parent!==null&&<label>親のKPI<select value={draft.parent??''} onChange={e=>setDraft({...draft,parent:e.target.value})}>{base.filter(n=>!descendants.has(n.id)).map(n=><option key={n.id} value={n.id}>{n.name}</option>)}</select></label>}
                 {draftError&&<p className="field-error">{draftError}</p>}
                 <button type="submit" className="button accent full"><Check size={15}/> 変更を保存</button>
