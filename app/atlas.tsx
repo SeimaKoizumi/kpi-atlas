@@ -6,11 +6,11 @@ import {
   Activity, ArrowDownRight, ArrowRight, ArrowUpRight, CalendarDays, Check, ChevronLeft,
   ChevronRight, CircleHelp, Database, GitBranch, GripVertical, Maximize, Minus, Mouse,
   Plus, Redo2, RefreshCw, ScanLine, Target, Undo2, X, Zap, Pencil, TriangleAlert,
-  Layers3, CalendarClock, CornerDownRight, Crosshair, Network, CircleDot, CloudCheck, Lock, Sigma,
+  Layers3, CalendarClock, CornerDownRight, Crosshair, Network, CircleDot, CloudCheck, Lock, Sigma, Copy,
 } from 'lucide-react';
 import {boardSchema,emptyBoard,fmt,H,isCountMetric,monthInfo,nextMonth,performance,priceActual,requiredForYield,resolveActuals,resolveTargets,sampleBoard,signed,starterNodes,sumActual,sumUnitFactor,today,toneLabel,usesYieldTarget,W,yieldSettingsError} from '../lib/atlas';
 import type {Board,Metric,Tone} from '../lib/atlas';
-import { BRANCH_RUN, layoutTree, placeTreeNode, planTreeDrop } from '../lib/tree-layout';
+import { BRANCH_RUN, duplicateTreeBranch, layoutTree, placeTreeNode, planTreeDrop } from '../lib/tree-layout';
 import {addChannelCards,readChannelMetrics} from '../lib/channel-sync';
 import type {ChannelMetric} from '../lib/channel-sync';
 
@@ -118,6 +118,8 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
   const dropBlocked = Boolean(dropPlan && dragAggregate && dropPlan.parent.id !== dragAggregate.id);
   const sumDraft = draft?.source === 'sum' ? draft : null;
   const sumOptions = sumDraft ? (layout.children.get(sumDraft.id) ?? []).filter(node=>node.cardType!=='task') : [];
+  const eligibleSumIds = sumDraft ? sumOptions.filter(n=>n.kind==='total'&&sumUnitFactor(n.unit,sumDraft.unit)!==null).map(n=>n.id) : [];
+  const selectedSumIds = sumDraft?.sumIds ?? [];
   const sumPreview = sumDraft ? sumActual(sumDraft, base, node => actuals.get(node.id) ?? null) : null;
   const priceDraft = draft?.source === 'price' ? draft : null;
   const priceSettings = priceDraft?.unitPrice;
@@ -400,6 +402,20 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
       if(focusCard)document.querySelector<HTMLElement>('[data-kpi-id="'+n.id+'"]')?.focus({preventScroll:true});
       else document.querySelector<HTMLInputElement>('#metric-name')?.select();
     });
+  }
+  function duplicateCard() {
+    if(!selectedNode?.parent)return;
+    if(!initialized.current){setToast('ブラウザの保存先を読み込んでから編集できます。');return;}
+    const result=duplicateTreeBranch(base,selectedNode.id);
+    if(!result.ok){
+      if(result.reason==='limit')setToast('複製すると1か月の上限（100項目）を超えます。');
+      return;
+    }
+    change(setNodes(state.current,month,result.nodes));
+    if(moveMode)fit(layoutTree(result.nodes).nodes);
+    setSelected(result.copy.id);setDraft(result.copy);setDraftError('');setDeleteOpen(false);setEditing(null);
+    setToast('カードを複製しました。');
+    requestAnimationFrame(()=>document.querySelector<HTMLInputElement>('#metric-name')?.select());
   }
   function setTaskDone(id:string,taskDone:boolean) {
     change(setNodes(state.current,month,base.map(node=>node.id===id?{...node,taskDone}:node)));
@@ -741,7 +757,7 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
                       setDraft({...draft,source,kind:'total',unit:sumUnitFactor('円',draft.unit)===null?'円':draft.unit,
                         unitPrice:draft.unitPrice ?? {amount:Number.NaN,unit:'円',quantityId:options.length===1?options[0].id:''}});
                     } else {
-                      setDraft({...draft,source,sumIds:source==='sum' ? (draft.sumIds ?? ['']) : draft.sumIds});
+                      setDraft({...draft,source,kind:source==='sum'?'total':draft.kind});
                     }
                     setDraftError('');
                   }}>
@@ -777,22 +793,23 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
                 </fieldset>}
                 {sumDraft&&<fieldset className="sum-fields">
                   <legend>合算するKPI</legend>
-                  <p>このKPIの直下にある項目を選択します。円・万円などの金額単位は自動で換算します。</p>
-                  {!sumOptions.length&&<p>直下にチャネル別のKPIを追加すると選択できます。</p>}
-                  {(sumDraft.sumIds??['']).map((id,index,ids)=><div className="sum-row" key={index}>
-                    <select aria-label={'合算対象 '+(index+1)} required value={id} onChange={e=>setSumIds(ids.map((entry,i)=>i===index?e.target.value:entry))}>
-                      <option value="">KPIを選択</option>
+                  <p>直下のKPIをまとめて選べます。円・万円などの金額単位は自動で換算します。</p>
+                  {sumOptions.length ? <>
+                    <div className="sum-actions">
+                      <button type="button" className="button secondary" disabled={!eligibleSumIds.length||eligibleSumIds.every(id=>selectedSumIds.includes(id))} onClick={()=>setSumIds(eligibleSumIds)}>すべて選択</button>
+                      <button type="button" className="button secondary" disabled={!selectedSumIds.length} onClick={()=>setSumIds([])}>選択を解除</button>
+                    </div>
+                    <div className="sum-choices">
                       {sumOptions.map(n=>{
-                        const compatible=n.kind==='total'&&sumUnitFactor(n.unit,sumDraft.unit)!==null;
-                        return <option key={n.id} value={n.id} disabled={!compatible||(n.id!==id&&ids.includes(n.id))}>
-                          {n.name}{n.unit?'（'+n.unit+'）':''}{compatible?'':' · 対象外'}
-                        </option>;
+                        const compatible=eligibleSumIds.includes(n.id);
+                        const checked=selectedSumIds.includes(n.id);
+                        return <label key={n.id} className="sum-choice">
+                          <input type="checkbox" checked={checked} disabled={!compatible&&!checked} onChange={e=>setSumIds(e.target.checked?[...selectedSumIds,n.id]:selectedSumIds.filter(id=>id!==n.id))}/>
+                          <span>{n.name}{n.unit?'（'+n.unit+'）':''}{!compatible&&<small>対象外</small>}</span>
+                        </label>;
                       })}
-                    </select>
-                    {ids.length>1&&<button type="button" className="icon-button" aria-label={'合算対象 '+(index+1)+'を外す'} onClick={()=>setSumIds(ids.filter((_,i)=>i!==index))}><X size={14}/></button>}
-                  </div>)}
-                  {sumOptions.some(n=>n.kind==='total'&&sumUnitFactor(n.unit,sumDraft.unit)!==null&&!sumDraft.sumIds?.includes(n.id))&&
-                    <button type="button" className="button secondary sum-add" disabled={sumDraft.sumIds?.includes('')} onClick={()=>setSumIds([...(sumDraft.sumIds??[]),''])}><Plus size={13}/>対象を追加</button>}
+                    </div>
+                  </> : <p>直下にKPIを追加すると選択できます。</p>}
                   <output className="sum-preview">
                     <span>合算プレビュー</span>
                     <strong>{sumPreview?.ok&&sumPreview.value!==null?fmt(sumPreview.value)+(sumDraft.unit?' '+sumDraft.unit:''):'—'}</strong>
@@ -807,6 +824,7 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
                 {draftError&&<p className="field-error">{draftError}</p>}
                 <button type="submit" className="button accent full"><Check size={15}/> 変更を保存</button>
               </form>
+              {selectedNode.parent!==null&&<button type="button" className="button secondary full" onClick={duplicateCard}><Copy size={15}/>{layout.children.get(selectedNode.id)?.length?'子カードごと複製':'カードを複製'}</button>}
               {selectedNode.parent!==null&&(deleteOpen?<div className="confirm-delete"><p>{draft.cardType==='task'?'このタスクを削除しますか？':'このKPIを削除しますか？ 子のカードはひとつ上の親に移ります。'}</p><button className="button secondary" onClick={()=>setDeleteOpen(false)}>戻る</button><button className="button danger" onClick={removeNode}>削除する</button></div>:<button className="delete-link" onClick={()=>setDeleteOpen(true)}>{draft.cardType==='task'?'このタスクを削除':'このKPIを削除'}</button>)}
             </div>:<>
               <div className="rail-kicker"><Crosshair size={14}/> FOCUS AREA</div>

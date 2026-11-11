@@ -65,9 +65,23 @@ main{max-width:1800px;margin:0 auto;padding:27px 32px 25px}.overview-head{displa
   font-weight: 700;
 }
 .sum-fields p { color: var(--muted); font-size: 10px; line-height: 1.6; }
-.sum-row { display: flex; align-items: center; gap: 4px; }
-.sum-row .icon-button { width: 25px; height: 28px; }
-.sum-add { justify-self: start; height: 27px; font-size: 10px; }
+.sum-actions { display: flex; flex-wrap: wrap; gap: 5px; }
+.sum-actions .button { height: 26px; padding: 0 6px; font-size: 10px; }
+.sum-choices { display: grid; max-height: 160px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; }
+.inspector-form .sum-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 7px;
+  color: var(--fg);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.sum-choice + .sum-choice { border-top: 1px solid var(--line); }
+.sum-choice:has(input:checked) { background: color-mix(in srgb, var(--blue) 14%, transparent); }
+.sum-choice:has(input:disabled) { color: var(--muted); cursor: default; }
+.inspector-form .sum-choice input { flex: none; width: 14px; height: 14px; margin: 0; accent-color: var(--blue); }
+.sum-choice small { margin-inline-start: 5px; color: var(--muted); font-size: inherit; }
 .sum-preview {
   display: flex;
   justify-content: space-between;

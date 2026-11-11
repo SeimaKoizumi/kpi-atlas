@@ -112,3 +112,40 @@ export function placeTreeNode(nodes: Metric[], id: string, parentId: string, bef
     return index === undefined ? node : {...node, parent:parentId, order:index};
   });
 }
+
+export function duplicateTreeBranch(nodes: Metric[], id: string) {
+  const layout = layoutTree(nodes);
+  const source = layout.byId.get(id);
+  if (!source?.parent) return {ok:false, reason:'root'} as const;
+
+  const branch = new Set<string>();
+  function collect(nodeId: string) {
+    branch.add(nodeId);
+    for (const child of layout.children.get(nodeId) ?? []) collect(child.id);
+  }
+  collect(id);
+  if (nodes.length + branch.size > 100) return {ok:false, reason:'limit'} as const;
+
+  const ids = new Map([...branch].map(nodeId => [nodeId, crypto.randomUUID()]));
+  const suffix = '（コピー）';
+  const name = source.name.slice(0, 60 - suffix.length).replace(/[\uD800-\uDBFF]$/, '').trimEnd() + suffix;
+  const copies = nodes.filter(node => branch.has(node.id)).map(node => {
+    const parent = node.parent!;
+    return {
+      ...node,
+      id: ids.get(node.id)!,
+      name: node.id === id ? name : node.name,
+      parent: ids.get(parent) ?? parent,
+      sumIds: node.sumIds?.map(inputId => ids.get(inputId) ?? inputId),
+      unitPrice: node.unitPrice && {
+        ...node.unitPrice,
+        quantityId: ids.get(node.unitPrice.quantityId) ?? node.unitPrice.quantityId,
+      },
+    };
+  });
+  const siblings = layout.children.get(source.parent) ?? [];
+  const afterSource = siblings[siblings.findIndex(sibling => sibling.id === id) + 1];
+  const copyId = ids.get(id)!;
+  const updated = placeTreeNode([...nodes, ...copies], copyId, source.parent, afterSource?.id ?? null);
+  return {ok:true, nodes:updated, copy:updated.find(node => node.id === copyId)!} as const;
+}
