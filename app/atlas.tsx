@@ -1,3 +1,5 @@
+import {AtlasTheme,ThemeButton} from './theme';
+import {ShareLaunch} from './share-launch';
 import {useCallback,useEffect,useEffectEvent,useMemo,useRef,useState} from 'react';
 import type {PointerEvent as ReactPointerEvent} from 'react';
 import {
@@ -46,13 +48,13 @@ function PaceBar({actual,expected,tone}:{actual:number;expected:number;tone:Tone
 export default function Atlas() {
   const [sample,setSample]=useState(false);
   const [personalMonth,setPersonalMonth]=useState(()=>today().month);
-  return <AtlasWorkspace
+  return <AtlasTheme><AtlasWorkspace
     key={sample?'sample':'personal'}
     sample={sample}
     initialMonth={sample?undefined:personalMonth}
     onMonthChange={sample?undefined:setPersonalMonth}
     onSwitchWorkspace={()=>setSample(current=>!current)}
-  />;
+  /></AtlasTheme>;
 }
 
 function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
@@ -170,7 +172,7 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
   const handleShortcut=useEffectEvent((event:KeyboardEvent)=>{
     if(event.defaultPrevented||event.isComposing||event.altKey||panel||deleteOpen||drag.current)return;
     const target=event.target;
-    if(target instanceof Element && (target.closest('input:not([type=checkbox]):not([type=radio]), textarea, select') || (target instanceof HTMLElement && target.isContentEditable)))return;
+    if(target instanceof Element && (target.closest('input:not([type=checkbox]):not([type=radio]), textarea, select, [role=dialog]') || (target instanceof HTMLElement && target.isContentEditable)))return;
 
     if(event.ctrlKey||event.metaKey) {
       const key=event.key.toLowerCase();
@@ -189,7 +191,7 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
     }
 
     if(event.key!=='Enter'||event.shiftKey||event.repeat)return;
-    if(target instanceof Element && target.closest('input, button, a[href], summary'))return;
+    if(target instanceof Element && target.closest('input, button, a[href], summary, [role=dialog]'))return;
     const focusedId=target instanceof Element ? target.getAttribute('data-kpi-id') : null;
     if(focusedId&&focusedId!==selected) {
       event.preventDefault();
@@ -544,6 +546,8 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
           {sample?'サンプルモード':save==='error'?<button onClick={retry}>{statusText[save]}</button>:<><span className={save==='saved'?'saved-dot':'waiting-dot'}/>{statusText[save]}</>}
         </div>
         {!sample&&<button className="button secondary sync-button" onClick={()=>setPanel('sync')}><Database size={iconSize}/>データ連携{configured&&<span className="saved-dot"/>}</button>}
+        {!sample&&<ShareLaunch variant="public" month={month} nodes={base}/>}
+        <ThemeButton/>
         <button className="icon-button help-button" aria-label="使い方" onClick={()=>setPanel('help')}><CircleHelp size={19}/></button>
       </div>
     </header>
