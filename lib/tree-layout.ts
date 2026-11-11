@@ -79,7 +79,7 @@ export function planTreeDrop(layout: TreeLayout, id: string, x: number, y: numbe
   let parent = originalParent;
   let distance = Math.abs(x - moving.x) - 18;
   for (const candidate of layout.nodes) {
-    if (branch.has(candidate.id) || candidate.depth === originalParent.depth) continue;
+    if (candidate.cardType==='task' || branch.has(candidate.id) || candidate.depth === originalParent.depth) continue;
     const columnDistance = Math.abs(x - (candidate.x + COLUMN_STEP));
     if (columnDistance > distance) continue;
     if (columnDistance === distance && Math.abs(y - candidate.y) >= Math.abs(y - parent.y)) continue;

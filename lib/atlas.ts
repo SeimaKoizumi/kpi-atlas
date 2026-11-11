@@ -6,6 +6,8 @@ export const metricSchema = z.object({
   id: z.string().min(1).max(80), parent: z.string().max(80).nullable(),
   name: z.string().trim().min(1).max(60), unit: z.string().max(12),
   kind: z.enum(['total','rate']), source: z.enum(['manual','api','sum']),
+  cardType: z.literal('task').optional(),
+  taskDone: z.boolean().optional(),
   channelSync: z.boolean().optional(),
   yieldPercent: z.number().min(0).max(100).optional(),
   manualYieldTarget: z.boolean().optional(),
@@ -24,6 +26,10 @@ export const boardSchema = z.object({
       ctx.addIssue({code:'custom',message:'Invalid tree'}); return;
     }
     for (const n of nodes) {
+      if ((n.cardType==='task' && (n.parent===null || n.source!=='manual' || n.yieldPercent!==undefined || n.channelSync)) ||
+          (n.parent!==null && map.get(n.parent)?.cardType==='task')) {
+        ctx.addIssue({code:'custom',message:'Tasks must be placed below a KPI'}); return;
+      }
       const yieldError = yieldSettingsError(n);
       if (yieldError) {
         ctx.addIssue({code:'custom',message:yieldError}); return;
@@ -81,7 +87,7 @@ export function sumActual(
   let value = 0;
   let unavailable = false;
   for (const id of ids) {
-    const node = nodes.find(n => n.id === id && n.parent === aggregate.id);
+    const node = nodes.find(n => n.id === id && n.parent === aggregate.id && n.cardType!=='task');
     if (!node) return {ok:false,message:'合算対象はこのKPIの直下から選んでください。'};
     const factor = sumUnitFactor(node.unit, aggregate.unit);
     if (node.kind !== 'total' || factor === null) {
@@ -220,6 +226,7 @@ export function sampleBoard(date: ReturnType<typeof today>): Board {
       child('event', root.id, 'イベント経由の申込', 16, 10),
       child('inquiries', 'web', 'Webの問い合わせ', 0, 110, 25),
       child('visits', 'inquiries', '案内ページの訪問', 0, 1020, 10),
+      {...starter,id:'email',parent:'inquiries',name:'体験日程を案内する',unit:'',cardType:'task',taskDone:false},
     ]},
   };
 }

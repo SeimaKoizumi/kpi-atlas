@@ -1,4 +1,4 @@
-import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
+import {useCallback,useEffect,useEffectEvent,useMemo,useRef,useState} from 'react';
 import type {PointerEvent as ReactPointerEvent} from 'react';
 import {
   Activity, ArrowDownRight, ArrowRight, ArrowUpRight, CalendarDays, Check, ChevronLeft,
@@ -29,7 +29,7 @@ const cap=(n:number,a:number,b:number)=>Math.min(b,Math.max(a,n));
 function monthNodes(b:Board, m:string) {
   if(b.months[m]) return b.months[m];
   const previous=Object.keys(b.months).filter(k=>k<m).sort().at(-1);
-  if(previous)return b.months[previous].map(n=>({...n,actual:0}));
+  if(previous)return b.months[previous].map(n=>n.cardType==='task'?{...n,taskDone:false}:{...n,actual:0});
   return starterNodes();
 }
 const setNodes=(b:Board,m:string,n:Metric[]):Board=>({...b,months:{...b.months,[m]:n}});
@@ -113,7 +113,7 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
   const dragAggregate = dragging ? aggregateByInput.get(dragging.id) : undefined;
   const dropBlocked = Boolean(dropPlan && dragAggregate && dropPlan.parent.id !== dragAggregate.id);
   const sumDraft = draft?.source === 'sum' ? draft : null;
-  const sumOptions = sumDraft ? (layout.children.get(sumDraft.id) ?? []) : [];
+  const sumOptions = sumDraft ? (layout.children.get(sumDraft.id) ?? []).filter(node=>node.cardType!=='task') : [];
   const sumPreview = sumDraft ? sumActual(sumDraft, base, node => actuals.get(node.id) ?? null) : null;
   const draftAutoTarget = Boolean(draft && usesYieldTarget(draft));
   const draftManualActual = draft?.source==='manual';
@@ -132,7 +132,8 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
   const root=nodes.find(n=>n.parent===null)!;
   const rootStats=performance(root,info.fraction);
   const selectedNode=nodes.find(n=>n.id===selected);
-  const ordered=nodes.map(n=>({n,...performance(n,info.fraction)}));
+  const insertionParent=selectedNode?.cardType==='task' ? selectedNode.parent??root.id : selectedNode?.id??root.id;
+  const ordered=nodes.filter(n=>n.cardType!=='task').map(n=>({n,...performance(n,info.fraction)}));
   const warnings=ordered.filter(item=>item.tone==='bad'||item.tone==='warn').sort((a,b)=>(a.pace??0)-(b.pace??0));
   const counts=ordered.reduce((t,{tone})=>({...t,[tone]:t[tone]+1}),{good:0,warn:0,bad:0,neutral:0});
   const displayMonth=month.replace('-',' / ');
@@ -166,10 +167,46 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
     };
   },[sample]);
   useEffect(()=>{if(!toast)return;const t=setTimeout(()=>setToast(''),3600);return()=>clearTimeout(t);},[toast]);
+  const handleShortcut=useEffectEvent((event:KeyboardEvent)=>{
+    if(event.defaultPrevented||event.isComposing||event.altKey||panel||deleteOpen||drag.current)return;
+    const target=event.target;
+    if(target instanceof Element && (target.closest('input:not([type=checkbox]):not([type=radio]), textarea, select') || (target instanceof HTMLElement && target.isContentEditable)))return;
+
+    if(event.ctrlKey||event.metaKey) {
+      const key=event.key.toLowerCase();
+      const backwards=key==='z'&&!event.shiftKey;
+      const forwards=(key==='y'&&!event.shiftKey)||(key==='z'&&event.shiftKey);
+      if(!backwards&&!forwards)return;
+      event.preventDefault();
+      if(backwards?undoLocked:redoLocked) {
+        setToast('順番や階層を変更するには移動モードをオンにしてください。');
+      } else if(backwards) {
+        undo();
+      } else {
+        redo();
+      }
+      return;
+    }
+
+    if(event.key!=='Enter'||event.shiftKey||event.repeat)return;
+    if(target instanceof Element && target.closest('input, button, a[href], summary'))return;
+    const focusedId=target instanceof Element ? target.getAttribute('data-kpi-id') : null;
+    if(focusedId&&focusedId!==selected) {
+      event.preventDefault();
+      pick(focusedId);
+    } else if(selectedNode) {
+      event.preventDefault();
+      addSibling();
+    }
+  });
   useEffect(()=>{
     const close=(e:KeyboardEvent)=>{if(e.key==='Escape'){setPanel(null);setSelected(null);setEditing(null);setDeleteOpen(false);}};
     window.addEventListener('keydown',close);
-    return()=>window.removeEventListener('keydown',close);
+    window.addEventListener('keydown',handleShortcut);
+    return()=>{
+      window.removeEventListener('keydown',close);
+      window.removeEventListener('keydown',handleShortcut);
+    };
   },[]);
 
   const write=useCallback((b:Board)=>{
@@ -266,7 +303,7 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
     setMoveMode(on=>!on);
   }
   function pointerStart(e:ReactPointerEvent<HTMLDivElement>,n?:Pick<Metric,'id'|'x'|'y'>) {
-    if(e.button!==0 || (e.target as HTMLElement).closest('button,input'))return;
+    if(e.button!==0 || (e.target as HTMLElement).closest('button,input,.task-status'))return;
     e.stopPropagation();
     drag.current={id:n?.id??null,sx:e.clientX,sy:e.clientY,x:n?.x??view.x,y:n?.y??view.y,moved:false};
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -330,16 +367,35 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
     change(setNodes(state.current,month,base.map(n=>n.id===id?{...n,actual:value}:n)));
     if(draft?.id===id)setDraft(d=>d?{...d,actual:value}:d);
   }
-  function addNode() {
+  function addSibling() {
+    if(!selectedNode?.parent) {
+      setToast('最上位のKPIに子を作るには「KPIを追加」を使ってください。');
+      return;
+    }
+    const siblings=layout.children.get(selectedNode.parent) ?? [];
+    const nextSibling=siblings[siblings.findIndex(node=>node.id===selectedNode.id)+1];
+    addNode(selectedNode.parent,{beforeId:nextSibling?.id,task:selectedNode.cardType==='task',focusCard:true});
+  }
+  function addNode(parentId:string,{beforeId,task,focusCard}: {beforeId?:string;task?:boolean;focusCard?:boolean}={}) {
     if(!initialized.current){setToast('ブラウザの保存先を読み込んでから編集できます。');return;}
     if(base.length>=100){setToast('1か月に追加できるのは100項目までです。');return;}
-    const parent=selectedNode??root;
-    const n:Metric={id:crypto.randomUUID(),parent:parent.id,name:'新しいKPI',unit:'件',kind:'total',source:'manual',key:'',actual:0,target:0,x:0,y:0};
-    const all = placeTreeNode([...base,n], n.id, parent.id, null);
+    const n:Metric={
+      id:crypto.randomUUID(),parent:parentId,name:task?'新しいタスク':'新しいKPI',
+      unit:task?'':'件',kind:'total',source:'manual',key:'',actual:0,target:0,x:0,y:0,
+      ...(task?{cardType:'task',taskDone:false}:{}),
+    };
+    const all = placeTreeNode([...base,n], n.id, parentId, beforeId??null);
     change(setNodes(state.current,month,all));
     if(moveMode)fit(layoutTree(all).nodes);
     setSelected(n.id);setDraft(n);setDraftError('');
-    requestAnimationFrame(()=>document.querySelector<HTMLInputElement>('#metric-name')?.select());
+    requestAnimationFrame(()=>{
+      if(focusCard)document.querySelector<HTMLElement>('[data-kpi-id="'+n.id+'"]')?.focus({preventScroll:true});
+      else document.querySelector<HTMLInputElement>('#metric-name')?.select();
+    });
+  }
+  function setTaskDone(id:string,taskDone:boolean) {
+    change(setNodes(state.current,month,base.map(node=>node.id===id?{...node,taskDone}:node)));
+    setDraft(current=>current?.id===id?{...current,taskDone}:current);
   }
   function setSumIds(sumIds: string[]) {
     setDraft(current => current ? {...current,sumIds} : current);
@@ -383,7 +439,7 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
     const enabledChannels = n.channelSync && !savedNode.channelSync;
     const updated = setNodes(state.current,month,all);
     change(enabledChannels ? {...updated,auto:true} : updated);
-    setDraft(n);setDraftError('');setToast('KPIを更新しました');
+    setDraft(n);setDraftError('');setToast(n.cardType==='task'?'タスクを更新しました':'KPIを更新しました');
     if (configured && (enabledChannels || (n.source==='api' && (savedNode.source!=='api' || n.key!==savedNode.key)))) void sync();
   }
   function removeNode() {
@@ -400,7 +456,7 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
       remaining = placeTreeNode(remaining, child.id, parent, beforeId);
     }
     change(setNodes(state.current, month, remaining));
-    pick(null);setToast('KPIを削除しました');
+    pick(null);setToast(selectedNode.cardType==='task'?'タスクを削除しました':'KPIを削除しました');
   }
   function saveFeed(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -547,10 +603,11 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
             <button type="button" role="switch" aria-checked={moveMode} className="button move-toggle" onClick={toggleMoveMode}>
               <span className="switch-track" aria-hidden="true"/><span>移動モード</span>
             </button>
-            <button className="icon-button" onClick={undo} disabled={!past.length||undoLocked} aria-label="元に戻す" title={undoLocked?'位置を元に戻すには移動モードをオンに':'元に戻す'}><Undo2 size={17}/></button>
-            <button className="icon-button" onClick={redo} disabled={!future.length||redoLocked} aria-label="やり直す" title={redoLocked?'位置をやり直すには移動モードをオンに':'やり直す'}><Redo2 size={17}/></button>
+            <button className="icon-button" onClick={undo} disabled={!past.length||undoLocked} aria-label="元に戻す" aria-keyshortcuts="Control+Z Meta+Z" title={undoLocked?'位置を元に戻すには移動モードをオンに':'元に戻す（Ctrl+Z / ⌘Z）'}><Undo2 size={17}/></button>
+            <button className="icon-button" onClick={redo} disabled={!future.length||redoLocked} aria-label="やり直す" aria-keyshortcuts="Control+Y Control+Shift+Z Meta+Y Meta+Shift+Z" title={redoLocked?'位置をやり直すには移動モードをオンに':'やり直す（Ctrl+Y / ⌘⇧Z）'}><Redo2 size={17}/></button>
             <span className="header-divider"/>
-            <button className="button accent" onClick={addNode}><Plus size={17}/> KPIを追加</button>
+            <button className="button secondary" onClick={()=>addNode(insertionParent,{task:true})}><Plus size={17}/> タスクを追加</button>
+            <button className="button accent" onClick={()=>addNode(insertionParent)}><Plus size={17}/> KPIを追加</button>
           </div>
         </div>
         <div className="workspace-body">
@@ -587,7 +644,7 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
                   </g>;
                 })}
               </svg>
-              {nodes.filter(n => n.parent !== null).map(n => {
+              {nodes.filter(n => n.parent !== null && n.cardType!=='task').map(n => {
                 const configured = n.yieldPercent !== undefined;
                 return <button
                   key={'yield-'+n.id}
@@ -601,12 +658,14 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
               })}
               {dropPlan&&!dropBlocked&&<div className="hierarchy-slot" aria-hidden="true" style={{left:dropPlan.x,top:dropPlan.y,width:W}}/>}
               {nodes.map(n=>{
-                const p=performance(n,info.fraction), isRoot=n.parent===null;
-                return <div key={n.id} className={'node '+p.tone+(selected===n.id?' selected':'')+(isRoot?' root-node':'')+(dragging?.id===n.id?' dragging':'')+(dropPlan?.parent.id===n.id&&!dropBlocked?' hierarchy-parent':'')} style={{left:n.x,top:n.y,width:W,height:H}} tabIndex={0} role="group" aria-label={n.name+' '+displayActual(n.actual)+n.unit}
-                    onKeyDown={e=>{if(e.target===e.currentTarget&&e.key==='Enter')pick(n.id);}}
+                const task=n.cardType==='task';
+                const p=task?null:performance(n,info.fraction), isRoot=n.parent===null;
+                return <div key={n.id} className={'node '+(p?.tone??'neutral')+(task?' task-node':'')+(n.taskDone?' done':'')+(selected===n.id?' selected':'')+(isRoot?' root-node':'')+(dragging?.id===n.id?' dragging':'')+(dropPlan?.parent.id===n.id&&!dropBlocked?' hierarchy-parent':'')} style={{left:n.x,top:n.y,width:W,height:H}} tabIndex={0} role="group" aria-label={task?n.name+' · タスク':n.name+' '+displayActual(n.actual)+n.unit}
+                    data-kpi-id={n.id}
                     onPointerDown={e=>pointerStart(e,n)} onPointerUp={e=>{e.stopPropagation();pointerEnd(e);}}>
-                  <div className="node-head"><span className={'node-type '+(isRoot?'kgi':'')}>{isRoot?'KGI':'KPI'}</span><span className="node-source">{n.source==='api'?<><Database size={10}/> API連携</>:n.source==='sum'?<><Sigma size={10}/> 合算</>:<><Pencil size={9}/> 手動</>}</span>{moveMode&&<GripVertical size={13} className="grip" aria-hidden="true"/>}</div>
+                  <div className="node-head"><span className={'node-type '+(isRoot?'kgi':'')}>{task?'タスク':isRoot?'KGI':'KPI'}</span>{!task&&<span className="node-source">{n.source==='api'?<><Database size={10}/> API連携</>:n.source==='sum'?<><Sigma size={10}/> 合算</>:<><Pencil size={9}/> 手動</>}</span>}{moveMode&&<GripVertical size={13} className="grip" aria-hidden="true"/>}</div>
                   <div className="node-name">{n.name}</div>
+                  {p?<>
                   <div className="node-number">
                     {editing===n.id?<input autoFocus className="inline-value" aria-label={n.name+'の実績'} type="number" min="0" step="any" value={inline} onFocus={e=>e.target.select()} onChange={e=>setInline(e.target.value)} onBlur={()=>commitInline(n.id)} onKeyDown={e=>{if(e.key==='Enter')e.currentTarget.blur();if(e.key==='Escape'){e.stopPropagation();setEditing(null);}}}/>:<button className="value-button" onClick={()=>startInline(n)} aria-label={n.name+(n.source==='sum'?'の合算設定を開く':'の実績を編集')}>{displayActual(n.actual)} <small>{n.unit}</small></button>}
                     <span className={'node-pace '+p.tone} title={toneLabel[p.tone]}>
@@ -615,6 +674,10 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
                   </div>
                   <PaceBar actual={p.progress} expected={n.target>0?(n.kind==='rate'&&info.fraction>0?1:info.fraction):0} tone={p.tone}/>
                   <div className="node-foot"><span>目安 {fmt(p.expected)}</span><span>目標 {displayActual(targets.get(n.id) ?? null)}</span></div>
+                  </>:<label className="task-status">
+                    <input type="checkbox" checked={Boolean(n.taskDone)} aria-label={n.name+'の完了'} onChange={e=>setTaskDone(n.id,e.target.checked)}/>
+                    <span>{n.taskDone?'完了':'未完了'}</span>
+                  </label>}
                 </div>;
               })}
             </div>
@@ -623,13 +686,14 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
             </div>
           </div>
 
-          <aside className="sidebar" aria-label={selectedNode?'KPIの詳細':'ボトルネック'}>
+          <aside className="sidebar" aria-label={selectedNode?.cardType==='task'?'タスクの詳細':selectedNode?'KPIの詳細':'ボトルネック'}>
             {selectedNode&&draft?.id===selectedNode.id?<div className="inspector">
               <div className="rail-kicker"><ScanLine size={14}/> NODE INSPECTOR <button className="icon-button close-inspector" aria-label="詳細を閉じる" onClick={()=>pick(null)}><X size={16}/></button></div>
-              <h3>KPIを編集</h3>
+              <h3>{draft.cardType==='task'?'タスクを編集':'KPIを編集'}</h3>
               <p className="rail-description">項目の設定や親子関係を変更できます。</p>
               <form onSubmit={e=>{e.preventDefault();saveDraft();}} className="inspector-form">
-                <label>指標名<input id="metric-name" required maxLength={60} value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value})}/></label>
+                <label>{draft.cardType==='task'?'タスク名':'指標名'}<input id="metric-name" required maxLength={60} value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value})}/></label>
+                {draft.cardType!=='task'&&<>
                 <div className="input-pair">
                   <label>月間目標{draftAutoTarget
                     ? <input readOnly value={displayActual(yieldPreview)}/>
@@ -698,11 +762,12 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
                   <input type="checkbox" checked={Boolean(draft.channelSync)} onChange={e=>setDraft({...draft,channelSync:e.target.checked})}/>
                   <span>連携先の内訳KPIを自動追加</span>
                 </label>}
-                {selectedNode.parent!==null&&<label>親のKPI<select value={draft.parent??''} onChange={e=>setDraft({...draft,parent:e.target.value})}>{base.filter(n=>!descendants.has(n.id)).map(n=><option key={n.id} value={n.id}>{n.name}</option>)}</select></label>}
+                </>}
+                {selectedNode.parent!==null&&<label>親のKPI<select value={draft.parent??''} onChange={e=>setDraft({...draft,parent:e.target.value})}>{base.filter(n=>n.cardType!=='task'&&!descendants.has(n.id)).map(n=><option key={n.id} value={n.id}>{n.name}</option>)}</select></label>}
                 {draftError&&<p className="field-error">{draftError}</p>}
                 <button type="submit" className="button accent full"><Check size={15}/> 変更を保存</button>
               </form>
-              {selectedNode.parent!==null&&(deleteOpen?<div className="confirm-delete"><p>このKPIを削除しますか？ 子KPIはひとつ上の親に移ります。</p><button className="button secondary" onClick={()=>setDeleteOpen(false)}>戻る</button><button className="button danger" onClick={removeNode}>削除する</button></div>:<button className="delete-link" onClick={()=>setDeleteOpen(true)}>このKPIを削除</button>)}
+              {selectedNode.parent!==null&&(deleteOpen?<div className="confirm-delete"><p>{draft.cardType==='task'?'このタスクを削除しますか？':'このKPIを削除しますか？ 子のカードはひとつ上の親に移ります。'}</p><button className="button secondary" onClick={()=>setDeleteOpen(false)}>戻る</button><button className="button danger" onClick={removeNode}>削除する</button></div>:<button className="delete-link" onClick={()=>setDeleteOpen(true)}>{draft.cardType==='task'?'このタスクを削除':'このKPIを削除'}</button>)}
             </div>:<>
               <div className="rail-kicker"><Crosshair size={14}/> FOCUS AREA</div>
               <div className="rail-heading"><h3>ボトルネック</h3><span className="issue-count">{warnings.length} 件</span></div>
@@ -743,6 +808,8 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
       </>:<>
         <div className="help-item"><Pencil size={16}/><div><strong>数値をその場で更新</strong><p>カードの実績をクリックして入力し、Enterで確定します。カード本体を選ぶと目標・単位・親KPIを編集できます。</p></div></div>
         <div className="help-item"><CornerDownRight size={17}/><div><strong>ツリーを組み替える</strong><p>「移動モード」をオンにすると、カードの移動、背景のドラッグ、ズームができます。カードを上下にドラッグすると同じ親の中で順番が変わり、別の列にドロップすると表示された親の下に移動します。「KPIを追加」で選択中のカードに子を作れます。</p></div></div>
+        <div className="help-item"><Check size={16}/><div><strong>KPIの下にタスクを追加</strong><p>KPIを選んで「タスクを追加」を押します。カードのチェックボックスで完了を切り替えられます。</p></div></div>
+        <div className="help-item"><Undo2 size={16}/><div><strong>キーボードで編集</strong><p>カードを選んで Enter を押すと、同じ種類のカードを同じ階層に追加します。Ctrl+Z で元に戻し、Ctrl+Y でやり直せます。Mac は ⌘Z／⌘⇧Z です。</p></div></div>
         <div className="help-item"><Target size={17}/><div><strong>今日の目安と比べる</strong><p>積み上げ型の目安は月間目標 × 経過日数 ÷ 月の日数。比率・平均は月間目標と比較します。目安の100%以上で順調、90%以上で注意、それ未満でビハインドです。</p></div></div>
       </>}
     </section></div>}

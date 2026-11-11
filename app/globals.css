@@ -34,6 +34,21 @@ main{max-width:1800px;margin:0 auto;padding:27px 32px 25px}.overview-head{displa
 .sample-controls .button { min-height: 34px; }
 .sample-controls p { margin-top: 6px; color: var(--muted); }
 
+.task-node .node-name { margin-top: 7px; }
+.task-node.done .node-name { color: var(--muted); }
+.task-status {
+  align-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+.task-status input { margin: 0; width: 15px; height: 15px; accent-color: var(--blue); }
+.task-node.done .task-status { color: var(--blue); }
+
 .sum-fields {
   display: grid;
   gap: 7px;
