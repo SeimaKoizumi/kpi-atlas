@@ -13,9 +13,10 @@ import type {Board,Metric,Tone} from '../lib/atlas';
 import { BRANCH_RUN, duplicateTreeBranch, layoutTree, placeTreeNode, planTreeDrop } from '../lib/tree-layout';
 import {addChannelCards,readChannelMetrics} from '../lib/channel-sync';
 import type {ChannelMetric} from '../lib/channel-sync';
+import {boardStorageKey,reviewApi} from '../lib/review-api';
+import {applyMemberReview,type PublishedReview,type ReviewPlan} from '../lib/member-review';
 
 const displayActual=(value:number|null)=>value===null?'—':fmt(value);
-const boardStorageKey = 'kpi-atlas.public.board.v1';
 const feedStorageKey = 'kpi-atlas.public.feed.v1';
 
 function parseFeedUrl(value: string) {
@@ -45,20 +46,22 @@ function PaceBar({actual,expected,tone}:{actual:number;expected:number;tone:Tone
   return <div className={'pace-bar '+tone}><i style={{width:pct(cap(actual,0,1))}}/>{expected>0&&<b style={{left:pct(cap(expected,0,1))}}/>}</div>;
 }
 
-export default function Atlas() {
+export default function Atlas({reviewToken=''}:{reviewToken?:string}) {
   const [sample,setSample]=useState(false);
   const [personalMonth,setPersonalMonth]=useState(()=>today().month);
   return <AtlasTheme><AtlasWorkspace
     key={sample?'sample':'personal'}
     sample={sample}
+    reviewToken={sample?'':reviewToken}
     initialMonth={sample?undefined:personalMonth}
     onMonthChange={sample?undefined:setPersonalMonth}
     onSwitchWorkspace={()=>setSample(current=>!current)}
   /></AtlasTheme>;
 }
 
-function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
+function AtlasWorkspace({sample,reviewToken,initialMonth,onMonthChange,onSwitchWorkspace}: {
   sample: boolean;
+  reviewToken:string;
   initialMonth?: string;
   onMonthChange?: (month: string) => void;
   onSwitchWorkspace: () => void;
@@ -90,12 +93,17 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
   const [editing,setEditing]=useState<string|null>(null);
   const [inline,setInline]=useState('');
   const [draft,setDraft]=useState<Metric|null>(null);
+  const [members,setMembers]=useState<{id:string;name:string}[]>([]);
+  const [reviewOverlay,setReviewOverlay]=useState<{month:string;records:{memberId:string;plan:ReviewPlan;result:PublishedReview|null}[]}>();
   const [draftError,setDraftError]=useState('');
   const [deleteOpen,setDeleteOpen]=useState(false);
   const viewRef=useRef(view);
   viewRef.current=view;
   const info=monthInfo(month,date);
   const base = useMemo(() => monthNodes(board, month), [board, month]);
+  const reviewedBase=useMemo(()=>reviewToken&&reviewOverlay?.month===month
+    ? reviewOverlay.records.reduce((nodes,row)=>applyMemberReview(nodes,row.memberId,row.plan,row.result,false),base)
+    : base,[base,month,reviewOverlay,reviewToken]);
   const layout = useMemo(() => layoutTree(base), [base]);
   const aggregateByInput = useMemo(() => {
     const aggregates = new Map<string, Metric>();
@@ -108,8 +116,8 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
     }
     return aggregates;
   }, [base]);
-  const actuals = useMemo(() => resolveActuals(base), [base]);
-  const targets = useMemo(() => resolveTargets(base), [base]);
+  const actuals = useMemo(() => resolveActuals(reviewedBase), [reviewedBase]);
+  const targets = useMemo(() => resolveTargets(reviewedBase), [reviewedBase]);
   const nodes = layout.nodes.map(node => ({
     ...node, actual:actuals.get(node.id) ?? null, target:targets.get(node.id) ?? 0,
   }));
@@ -237,6 +245,35 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
     if(initialized.current)write(state.current);
     else window.location.reload();
   };
+  useEffect(()=>{
+    if(!reviewToken)return;
+    let active=true;
+    reviewApi('/reviews?directory=1',reviewToken).then(data=>{if(active)setMembers(data.members);}).catch(()=>{});
+    return()=>{active=false;};
+  },[reviewToken]);
+  useEffect(()=>{
+    if(!reviewToken||!members.length)return;
+    let active=true;
+    const refresh=()=>reviewApi('/reviews?tree='+encodeURIComponent(month),reviewToken)
+      .then(data=>{if(active)setReviewOverlay({month,records:data.records});})
+      .catch(()=>{if(active)setReviewOverlay(undefined);});
+    void refresh();
+    const timer=setInterval(()=>{if(document.visibilityState==='visible')void refresh();},60000);
+    return()=>{active=false;clearInterval(timer);};
+  },[members.length,month,reviewToken]);
+  async function importBoard(file:File){
+    if(file.size>1000000){setToast('ファイルが大きすぎます。');return;}
+    try{
+      const imported=boardSchema.parse(JSON.parse(await file.text()));
+      const current=state.current;
+      if(Object.keys(imported.months).some(key=>current.months[key])){
+        setToast('同じ月のデータがすでにあるため、読み込めません。');return;
+      }
+      const merged=boardSchema.parse({...current,months:{...current.months,...imported.months}});
+      change(merged);
+      setToast('KPIツリーを読み込みました。');
+    }catch{setToast('KPI Atlasから書き出したJSONファイルを選択してください。');}
+  }
   function pick(id:string|null) {
     setSelected(id);setDeleteOpen(false);setDraftError('');
     const n=base.find(n=>n.id===id);
@@ -435,6 +472,10 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
       setDraftError('実績は0以上の数値にしてください。');return;
     }
     if(draft.source==='api'&&!draft.key.trim()){setDraftError('連携キーを入力してください。');return;}
+    const reviewMemberId=!draft.cardType&&draft.source==='manual'?draft.reviewMemberId:undefined;
+    if(reviewMemberId&&base.some(node=>node.id!==draft.id&&node.reviewMemberId===reviewMemberId)){
+      setDraftError('このメンバーは別のカードに紐付けられています。');return;
+    }
     const yieldError = yieldSettingsError(draft);
     if (yieldError) {setDraftError(yieldError);return;}
 
@@ -442,6 +483,7 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
     if (!savedNode) return;
     const n: Metric = {
       ...draft,
+      reviewMemberId,
       order:savedNode.order,
       name:draft.name.trim(),
       key:draft.key.trim(),
@@ -569,6 +611,7 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
           {sample?'サンプルモード':save==='error'?<button onClick={retry}>{statusText[save]}</button>:<><span className={save==='saved'?'saved-dot':'waiting-dot'}/>{statusText[save]}</>}
         </div>
         {!sample&&<button className="button secondary sync-button" onClick={()=>setPanel('sync')}><Database size={iconSize}/>データ連携{configured&&<span className="saved-dot"/>}</button>}
+        {!sample&&<a className="button secondary" href="#reviews">月次評価</a>}
         {!sample&&<ShareLaunch variant="public" month={month} nodes={base}/>}
         <ThemeButton/>
         <button className="icon-button help-button" aria-label="使い方" onClick={()=>setPanel('help')}><CircleHelp size={19}/></button>
@@ -721,6 +764,14 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
               <form onSubmit={e=>{e.preventDefault();saveDraft();}} className="inspector-form">
                 <label>{draft.cardType==='task'?'タスク名':'指標名'}<input id="metric-name" required maxLength={60} value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value})}/></label>
                 {draft.cardType!=='task'&&<>
+                {members.length>0&&draft.source==='manual'&&<label>月次評価のメンバー
+                  <select value={draft.reviewMemberId??''} onChange={e=>setDraft({...draft,reviewMemberId:e.target.value||undefined})}>
+                    <option value="">紐付けなし</option>
+                    {draft.reviewMemberId&&!members.some(member=>member.id===draft.reviewMemberId)&&
+                      <option value={draft.reviewMemberId}>登録済みのメンバー</option>}
+                    {members.map(member=><option key={member.id} value={member.id}>{member.name}</option>)}
+                  </select>
+                </label>}
                 <div className="input-pair">
                   <label>月間目標{draftAutoTarget
                     ? <input readOnly value={displayActual(yieldPreview)}/>
@@ -851,6 +902,11 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
     {panel&&<div className="overlay" onClick={()=>setPanel(null)}><section className="dialog" role="dialog" aria-modal="true" aria-label={panel==='sync'?'データ連携':'使い方'} onClick={e=>e.stopPropagation()}>
       <div className="dialog-title"><span className="tree-icon">{panel==='sync'?<Database size={18}/>:<CircleHelp size={18}/>}</span><h2>{panel==='sync'?'データ連携':'ツリーの使い方'}</h2><button autoFocus className="icon-button" aria-label="閉じる" onClick={()=>setPanel(null)}><X size={20}/></button></div>
       {panel==='sync'?<>
+        <label className="auto-row">KPIツリーのJSONを取り込む<input type="file" accept="application/json,.json" onChange={event=>{
+          const file=event.target.files?.[0];
+          if(file)void importBoard(file);
+          event.target.value='';
+        }}/></label>
         <p>自分の集計APIから、月ごとの実績を取り込めます。認証不要のHTTPS APIで、このページからのアクセスを許可してください。</p>
         <form className="inspector-form" onSubmit={saveFeed}>
           <label>連携先URL<input type="url" value={feedDraft} placeholder="https://example.com/kpi" disabled={syncing} onChange={event=>setFeedDraft(event.target.value)}/></label>

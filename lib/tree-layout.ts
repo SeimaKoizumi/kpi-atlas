@@ -134,6 +134,7 @@ export function duplicateTreeBranch(nodes: Metric[], id: string) {
     return {
       ...node,
       id: ids.get(node.id)!,
+      reviewMemberId: undefined,
       name: node.id === id ? name : node.name,
       parent: ids.get(parent) ?? parent,
       sumIds: node.sumIds?.map(inputId => ids.get(inputId) ?? inputId),

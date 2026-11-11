@@ -8,6 +8,7 @@ export const metricSchema = z.object({
   kind: z.enum(['total','rate']), source: z.enum(['manual','api','sum','price']),
   cardType: z.literal('task').optional(),
   taskDone: z.boolean().optional(),
+  reviewMemberId: z.string().min(1).max(80).optional(),
   channelSync: z.boolean().optional(),
   yieldPercent: z.number().min(0).max(100).optional(),
   manualYieldTarget: z.boolean().optional(),
