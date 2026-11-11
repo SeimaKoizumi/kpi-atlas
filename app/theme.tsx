@@ -29,7 +29,7 @@ const palettes=[
 ] as const;
 
 type Colors=[string,string,string,string];
-type Theme={preset:number|null;colors:Colors};
+type Theme={preset:number|null;colors:Colors;numberColor?:string};
 const defaultTheme:Theme={preset:0,colors:[...palettes[0].slice(1)] as Colors};
 const storageKey='kpi-atlas.theme.v1';
 const ThemeContext=createContext<{theme:Theme;setTheme:(theme:Theme)=>void}>({
@@ -58,7 +58,7 @@ export function AtlasTheme({children}:{children:ReactNode}) {
   const [theme,update]=useState(defaultTheme);
   useEffect(()=>{
     try {
-      const value=JSON.parse(localStorage.getItem(storageKey)??'null') as {preset?:number|null;colors?:unknown}|null;
+      const value=JSON.parse(localStorage.getItem(storageKey)??'null') as {preset?:number|null;colors?:unknown;numberColor?:unknown}|null;
       if(!value||!Array.isArray(value.colors)||![3,4].includes(value.colors.length)||
         !value.colors.every(color=>typeof color==='string'&&colorPattern.test(color)))return;
       const [main,sub,accent,badge]=value.colors;
@@ -66,7 +66,10 @@ export function AtlasTheme({children}:{children:ReactNode}) {
       const fallbackBadge=preset===null
         ? (ink(sub)==='#ffffff'?'#26374b':'#dce6f3')
         : palettes[preset][4];
-      update({preset,colors:[main,sub,accent,badge??fallbackBadge]});
+      const numberColor=typeof value.numberColor==='string'&&colorPattern.test(value.numberColor)
+        ? value.numberColor
+        : undefined;
+      update({preset,colors:[main,sub,accent,badge??fallbackBadge],numberColor});
     }catch{}
   },[]);
   function setTheme(value:Theme) {
@@ -75,6 +78,7 @@ export function AtlasTheme({children}:{children:ReactNode}) {
   }
   const [main,sub,accent,badge]=theme.colors;
   const style={
+    '--theme-number':theme.numberColor??ink(sub),
     '--theme-main':main,'--theme-sub':sub,'--theme-accent':accent,'--theme-badge':badge,
     '--theme-main-ink':ink(main),'--theme-sub-ink':ink(sub),'--theme-accent-ink':ink(accent),'--theme-badge-ink':ink(badge),
   } as CSSProperties;
@@ -86,6 +90,7 @@ export function AtlasTheme({children}:{children:ReactNode}) {
 export function ThemeButton() {
   const {theme,setTheme}=useContext(ThemeContext);
   const [open,setOpen]=useState(false);
+  const numberColor=theme.numberColor??ink(theme.colors[1]);
   return <>
     <button type="button" className="icon-button help-button" aria-label="配色を編集" title="配色を編集" onClick={()=>setOpen(true)}><Palette size={18}/></button>
     {open&&<div className="overlay" onClick={()=>setOpen(false)}>
@@ -93,18 +98,27 @@ export function ThemeButton() {
         if(event.key==='Escape'){event.stopPropagation();setOpen(false);}
       }}>
         <div className="dialog-title"><h2>配色を編集</h2><button type="button" autoFocus className="icon-button" aria-label="閉じる" onClick={()=>setOpen(false)}><X size={20}/></button></div>
-        <div className="theme-colors">{['メイン','サブ','アクセント','案内・バッジ'].map((label,index)=><label key={label}>
-          <span>{label}</span>
-          <input type="color" value={theme.colors[index]} onInput={event=>{
-            const colors=[...theme.colors] as Colors;
-            colors[index]=event.currentTarget.value;
-            setTheme({preset:null,colors});
-          }}/>
-          <code>{theme.colors[index]}</code>
-        </label>)}</div>
+        <div className="theme-colors">
+          {['メイン','サブ','アクセント','案内・バッジ'].map((label,index)=><label key={label}>
+            <span>{label}</span>
+            <input type="color" value={theme.colors[index]} onInput={event=>{
+              const colors=[...theme.colors] as Colors;
+              colors[index]=event.currentTarget.value;
+              setTheme({...theme,preset:null,colors});
+            }}/>
+            <code>{theme.colors[index]}</code>
+          </label>)}
+          <label>
+            <span>数字の色</span>
+            <input type="color" aria-label="数字の色" value={numberColor} onInput={event=>{
+              setTheme({...theme,preset:null,numberColor:event.currentTarget.value});
+            }}/>
+            <code>{numberColor}</code>
+          </label>
+        </div>
         <div className="theme-presets" aria-label="配色テーマ">{palettes.map(([title,main,sub,accent,badge],index)=><button key={title}
           type="button" aria-pressed={theme.preset===index} onClick={()=>setTheme({preset:index,colors:[main,sub,accent,badge]})}>
-          <span className="theme-swatches" aria-hidden="true">{[main,sub,accent,badge].map((color,swatch)=><i key={swatch} style={{background:color}}/>)}</span>
+          <span className="theme-swatches" aria-hidden="true">{[main,sub,accent,badge,ink(sub)].map((color,swatch)=><i key={swatch} style={{background:color}}/>)}</span>
           <span>{title}</span>
         </button>)}</div>
       </section>
