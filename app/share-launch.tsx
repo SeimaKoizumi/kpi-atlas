@@ -10,9 +10,9 @@ function snapshot(month:string,nodes:Metric[]):Board {
   const actuals=resolveActuals(nodes);
   const shared=nodes.map((node):Metric=>({
     id:node.id,parent:node.parent,name:node.name,kind:node.kind,unit:node.unit,
-    source:node.source==='sum'?'sum':'manual',key:'',
-    actual:node.source==='sum'?0:actuals.get(node.id)??0,target:node.target,
-    x:node.x,y:node.y,order:node.order,sumIds:node.sumIds,
+    source:node.source==='sum'||node.source==='price'?node.source:'manual',key:'',
+    actual:node.source==='sum'||node.source==='price'?0:actuals.get(node.id)??0,target:node.target,
+    x:node.x,y:node.y,order:node.order,sumIds:node.sumIds,unitPrice:node.unitPrice,
     yieldPercent:node.yieldPercent,manualYieldTarget:node.manualYieldTarget,
     cardType:node.cardType,taskDone:node.taskDone,
   }));

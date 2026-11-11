@@ -5,13 +5,16 @@ const number = z.number().finite().min(0).max(1e12);
 export const metricSchema = z.object({
   id: z.string().min(1).max(80), parent: z.string().max(80).nullable(),
   name: z.string().trim().min(1).max(60), unit: z.string().max(12),
-  kind: z.enum(['total','rate']), source: z.enum(['manual','api','sum']),
+  kind: z.enum(['total','rate']), source: z.enum(['manual','api','sum','price']),
   cardType: z.literal('task').optional(),
   taskDone: z.boolean().optional(),
   channelSync: z.boolean().optional(),
   yieldPercent: z.number().min(0).max(100).optional(),
   manualYieldTarget: z.boolean().optional(),
   sumIds: z.array(z.string().min(1).max(80)).max(99).optional(),
+  unitPrice: z.object({
+    amount: number, unit: z.enum(['円','万円']), quantityId: z.string().min(1).max(80),
+  }).optional(),
   key: z.string().max(100), actual: number, target: number,
   order: z.number().int().min(0).max(99).optional(),
   x: z.number().min(0).max(10000), y: z.number().min(0).max(10000),
@@ -34,8 +37,8 @@ export const boardSchema = z.object({
       if (yieldError) {
         ctx.addIssue({code:'custom',message:yieldError}); return;
       }
-      if (n.source === 'sum') {
-        const result = sumActual(n, nodes);
+      if (n.source === 'sum' || n.source === 'price') {
+        const result = n.source === 'price' ? priceActual(n, nodes) : sumActual(n, nodes);
         if (!result.ok) {
           ctx.addIssue({code:'custom',message:result.message}); return;
         }
@@ -66,12 +69,12 @@ export function sumUnitFactor(from: string, to: string): number | null {
   return sourceFactor && targetFactor ? sourceFactor / targetFactor : null;
 }
 
-type SumResult = {ok: true; value: number | null} | {ok: false; message: string};
+type CalculationResult = {ok: true; value: number | null} | {ok: false; message: string};
 export function sumActual(
   aggregate: Metric,
   nodes: Metric[],
   readActual: (node: Metric) => number | null = node => node.actual,
-): SumResult {
+): CalculationResult {
   if (aggregate.kind !== 'total') {
     return {ok:false,message:'合算は積み上げ型のKPIで使えます。'};
   }
@@ -112,6 +115,34 @@ export function yieldSettingsError(node: Metric): string | null {
 }
 
 const countUnits = new Set(['件','人','名','回','社','通','枠','本','個','台']);
+
+export function isCountMetric(node: Metric): boolean {
+  return node.cardType !== 'task' && node.kind === 'total' && countUnits.has(node.unit.normalize('NFKC').trim());
+}
+
+export function priceActual(
+  metric: Metric,
+  nodes: Metric[],
+  readActual: (node: Metric) => number | null = node => node.actual,
+): CalculationResult {
+  const settings = metric.unitPrice;
+  const outputUnit = yenUnits.get(metric.unit.normalize('NFKC').trim());
+  if (metric.kind !== 'total' || outputUnit === undefined) {
+    return {ok:false,message:'金額カードの種類を積み上げにし、単位を「円」や「万円」にしてください。'};
+  }
+  if (!settings || !number.safeParse(settings.amount).success) {
+    return {ok:false,message:'0以上の単価を入力してください。'};
+  }
+  const quantity = nodes.find(node => node.id === settings.quantityId && node.parent === metric.id && isCountMetric(node));
+  if (!quantity) {
+    return {ok:false,message:'直下から件数KPIを選択してください。'};
+  }
+  const inputUnit = yenUnits.get(settings.unit);
+  if (inputUnit === undefined) return {ok:false,message:'単価の通貨単位を確認してください。'};
+  const actual = readActual(quantity);
+  const value = actual === null ? null : (settings.amount * inputUnit * actual) / outputUnit;
+  return {ok:true,value:value !== null && Number.isFinite(value) ? value : null};
+}
 
 export function requiredForYield(leftTarget: number | null, percent: number, metric: Pick<Metric,'kind'|'unit'>): number | null {
   if (leftTarget === null || percent <= 0 || percent > 100) return null;
@@ -158,9 +189,12 @@ export function resolveActuals(nodes: Metric[]): Map<string, number | null> {
     if (existing !== undefined) return existing;
 
     let actual: number | null = node.actual;
-    if (node.source === 'sum') {
-      const sum = sumActual(node, nodes, resolve);
-      if (sum.ok) actual = sum.value;
+    if (node.source === 'price') {
+      const result = priceActual(node, nodes, resolve);
+      actual = result.ok ? result.value : null;
+    } else if (node.source === 'sum') {
+      const result = sumActual(node, nodes, resolve);
+      if (result.ok) actual = result.value;
     }
     actuals.set(node.id, actual);
     return actual;

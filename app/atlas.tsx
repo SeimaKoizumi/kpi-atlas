@@ -8,7 +8,7 @@ import {
   Plus, Redo2, RefreshCw, ScanLine, Target, Undo2, X, Zap, Pencil, TriangleAlert,
   Layers3, CalendarClock, CornerDownRight, Crosshair, Network, CircleDot, CloudCheck, Lock, Sigma,
 } from 'lucide-react';
-import {boardSchema,emptyBoard,fmt,H,monthInfo,nextMonth,performance,requiredForYield,resolveActuals,resolveTargets,sampleBoard,signed,starterNodes,sumActual,sumUnitFactor,today,toneLabel,usesYieldTarget,W,yieldSettingsError} from '../lib/atlas';
+import {boardSchema,emptyBoard,fmt,H,isCountMetric,monthInfo,nextMonth,performance,priceActual,requiredForYield,resolveActuals,resolveTargets,sampleBoard,signed,starterNodes,sumActual,sumUnitFactor,today,toneLabel,usesYieldTarget,W,yieldSettingsError} from '../lib/atlas';
 import type {Board,Metric,Tone} from '../lib/atlas';
 import { BRANCH_RUN, layoutTree, placeTreeNode, planTreeDrop } from '../lib/tree-layout';
 import {addChannelCards,readChannelMetrics} from '../lib/channel-sync';
@@ -102,6 +102,8 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
     for (const node of base) {
       if (node.source === 'sum') {
         for (const inputId of node.sumIds ?? []) aggregates.set(inputId, node);
+      } else if (node.source === 'price' && node.unitPrice) {
+        aggregates.set(node.unitPrice.quantityId, node);
       }
     }
     return aggregates;
@@ -117,6 +119,10 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
   const sumDraft = draft?.source === 'sum' ? draft : null;
   const sumOptions = sumDraft ? (layout.children.get(sumDraft.id) ?? []).filter(node=>node.cardType!=='task') : [];
   const sumPreview = sumDraft ? sumActual(sumDraft, base, node => actuals.get(node.id) ?? null) : null;
+  const priceDraft = draft?.source === 'price' ? draft : null;
+  const priceSettings = priceDraft?.unitPrice;
+  const priceOptions = priceDraft ? (layout.children.get(priceDraft.id) ?? []).filter(isCountMetric) : [];
+  const pricePreview = priceDraft ? priceActual(priceDraft, base, node => actuals.get(node.id) ?? null) : null;
   const draftAutoTarget = Boolean(draft && usesYieldTarget(draft));
   const draftManualActual = draft?.source==='manual';
   const yieldPreview = draft?.parent && draft.yieldPercent !== undefined
@@ -330,7 +336,7 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
       if (!plan) return;
       const aggregate = aggregateByInput.get(d.id);
       if (aggregate && plan.parent.id !== aggregate.id) {
-        setToast(aggregate.name+'の合算対象から外すと、別の階層に移動できます。');
+        setToast(aggregate.name+'の集計対象から外すと、別の階層に移動できます。');
         return;
       }
       const changedParent = layout.byId.get(d.id)?.parent !== plan.parent.id;
@@ -356,7 +362,7 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
     setDraftError('');
   }
   function startInline(n:Pick<Metric,'id'|'source'> & {actual:number|null}) {
-    if(n.source==='sum'){pick(n.id);return;}
+    if(n.source==='sum'||n.source==='price'){pick(n.id);return;}
     if(n.source==='api'){pick(n.id);setToast('API連携の数値は「データ連携」から更新できます。');return;}
     setInline(n.actual===null?'':String(n.actual));setEditing(n.id);
   }
@@ -427,14 +433,15 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
       actual:draftManualActual ? draft.actual : draft.source==='api' && draft.key.trim()!==savedNode.key ? 0 : savedNode.actual,
       manualYieldTarget:draft.yieldPercent!==undefined && draft.manualYieldTarget ? true : undefined,
       sumIds:draft.source==='sum' ? draft.sumIds : undefined,
+      unitPrice:draft.source==='price' ? draft.unitPrice : undefined,
     };
     let all = base.map(old => old.id === n.id ? n : old);
     if (n.parent && n.parent !== savedNode.parent) all = placeTreeNode(all, n.id, n.parent, null);
     for (const aggregate of all) {
-      if (aggregate.source !== 'sum') continue;
-      const result = sumActual(aggregate, all);
+      if (aggregate.source !== 'sum' && aggregate.source !== 'price') continue;
+      const result = aggregate.source === 'price' ? priceActual(aggregate, all) : sumActual(aggregate, all);
       if (!result.ok) {
-        setDraftError(aggregate.id === n.id ? result.message : aggregate.name+'の合算設定を確認してください。'+result.message);
+        setDraftError(aggregate.id === n.id ? result.message : aggregate.name+'の集計設定を確認してください。'+result.message);
         return;
       }
     }
@@ -449,7 +456,7 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
     const {id,parent}=selectedNode;
     const aggregate = aggregateByInput.get(id);
     if (aggregate) {
-      setToast(aggregate.name+'の合算対象から外してから削除してください。');return;
+      setToast(aggregate.name+'の集計対象から外してから削除してください。');return;
     }
     const siblings = layout.children.get(parent) ?? [];
     const beforeId = siblings[siblings.findIndex(n => n.id === id) + 1]?.id ?? null;
@@ -619,7 +626,7 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
             <div className="canvas-label"><span/><b>LIVE CANVAS</b><span className="canvas-label-divider"/><span>{year}年{mm}月</span></div>
             {moveMode&&<div className={'hierarchy-hint'+(dropPlan?' active':'')+(dropBlocked?' blocked':'')}>
               <GitBranch size={13} aria-hidden="true"/>
-              {dropBlocked?'先に親KPIの合算対象から外してください':dropPlan
+              {dropBlocked?'先に親KPIの集計対象から外してください':dropPlan
                 ?dropPlan.parent.id===layout.byId.get(dragging?.id??'')?.parent
                   ?'この位置に並べ替え'
                   :'第'+(dropPlan.depth+1)+'階層 · '+dropPlan.parent.name+'の子に移動'
@@ -667,11 +674,11 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
                 return <div key={n.id} className={'node '+(p?.tone??'neutral')+(task?' task-node':'')+(n.taskDone?' done':'')+(selected===n.id?' selected':'')+(isRoot?' root-node':'')+(dragging?.id===n.id?' dragging':'')+(dropPlan?.parent.id===n.id&&!dropBlocked?' hierarchy-parent':'')} style={{left:n.x,top:n.y,width:W,height:H}} tabIndex={0} role="group" aria-label={task?n.name+' · タスク':n.name+' '+displayActual(n.actual)+n.unit}
                     data-kpi-id={n.id}
                     onPointerDown={e=>pointerStart(e,n)} onPointerUp={e=>{e.stopPropagation();pointerEnd(e);}}>
-                  <div className="node-head"><span className={'node-type '+(isRoot?'kgi':'')}>{task?'タスク':isRoot?'KGI':'KPI'}</span>{!task&&<span className="node-source">{n.source==='api'?<><Database size={10}/> API連携</>:n.source==='sum'?<><Sigma size={10}/> 合算</>:<><Pencil size={9}/> 手動</>}</span>}{moveMode&&<GripVertical size={13} className="grip" aria-hidden="true"/>}</div>
+                  <div className="node-head"><span className={'node-type '+(isRoot?'kgi':'')}>{task?'タスク':isRoot?'KGI':'KPI'}</span>{!task&&<span className="node-source">{n.source==='api'?<><Database size={10}/> API連携</>:n.source==='price'?<>単価×件数</>:n.source==='sum'?<><Sigma size={10}/> 合算</>:<><Pencil size={9}/> 手動</>}</span>}{moveMode&&<GripVertical size={13} className="grip" aria-hidden="true"/>}</div>
                   <div className="node-name">{n.name}</div>
                   {p?<>
                   <div className="node-number">
-                    {editing===n.id?<input autoFocus className="inline-value" aria-label={n.name+'の実績'} type="number" min="0" step="any" value={inline} onFocus={e=>e.target.select()} onChange={e=>setInline(e.target.value)} onBlur={()=>commitInline(n.id)} onKeyDown={e=>{if(e.key==='Enter')e.currentTarget.blur();if(e.key==='Escape'){e.stopPropagation();setEditing(null);}}}/>:<button className="value-button" onClick={()=>startInline(n)} aria-label={n.name+(n.source==='sum'?'の合算設定を開く':'の実績を編集')}>{displayActual(n.actual)} <small>{n.unit}</small></button>}
+                    {editing===n.id?<input autoFocus className="inline-value" aria-label={n.name+'の実績'} type="number" min="0" step="any" value={inline} onFocus={e=>e.target.select()} onChange={e=>setInline(e.target.value)} onBlur={()=>commitInline(n.id)} onKeyDown={e=>{if(e.key==='Enter')e.currentTarget.blur();if(e.key==='Escape'){e.stopPropagation();setEditing(null);}}}/>:<button className="value-button" onClick={()=>startInline(n)} aria-label={n.name+(n.source==='price'?'の単価設定を開く':n.source==='sum'?'の合算設定を開く':'の実績を編集')}>{displayActual(n.actual)} <small>{n.unit}</small></button>}
                     <span className={'node-pace '+p.tone} title={toneLabel[p.tone]}>
                       {p.tone==='good'?<ArrowUpRight size={10} aria-hidden="true"/>:p.tone==='bad'?<ArrowDownRight size={10} aria-hidden="true"/>:p.tone==='warn'?<Minus size={9} aria-hidden="true"/>:null}{pct(p.pace)}
                     </span>
@@ -729,16 +736,45 @@ function AtlasWorkspace({sample,initialMonth,onMonthChange,onSwitchWorkspace}: {
                 <label>実績の入力方法
                   <select value={draft.source} onChange={e=>{
                     const source = e.target.value as Metric['source'];
-                    setDraft({...draft,source,sumIds:source==='sum' ? (draft.sumIds ?? ['']) : draft.sumIds});
+                    if(source==='price') {
+                      const options=(layout.children.get(draft.id) ?? []).filter(isCountMetric);
+                      setDraft({...draft,source,kind:'total',unit:sumUnitFactor('円',draft.unit)===null?'円':draft.unit,
+                        unitPrice:draft.unitPrice ?? {amount:Number.NaN,unit:'円',quantityId:options.length===1?options[0].id:''}});
+                    } else {
+                      setDraft({...draft,source,sumIds:source==='sum' ? (draft.sumIds ?? ['']) : draft.sumIds});
+                    }
                     setDraftError('');
                   }}>
                     <option value="manual">手動入力</option>
                     <option value="sum">選択して合算</option>
+                    <option value="price">単価 × 件数</option>
                     {!sample&&<option value="api">外部API連携</option>}
                   </select>
                 </label>
                 {draftManualActual&&<label>実績<input type="number" min="0" max={1e12} step="any" required value={Number.isNaN(draft.actual)?'':draft.actual} onChange={e=>setDraft({...draft,actual:e.target.valueAsNumber})}/></label>}
                 {draft.source==='api'&&<label>連携キー<input required maxLength={100} placeholder="例: total_revenue" list="feed-key-options" value={draft.key} onChange={e=>setDraft({...draft,key:e.target.value})}/></label>}
+                {priceDraft&&priceSettings&&<fieldset className="sum-fields">
+                  <legend>単価と件数</legend>
+                  <div className="input-pair">
+                    <label>単価<input type="number" min="0" max={1e12} step="any" required
+                      value={Number.isNaN(priceSettings.amount)?'':priceSettings.amount}
+                      onChange={e=>setDraft({...priceDraft,unitPrice:{...priceSettings,amount:e.target.valueAsNumber}})}/></label>
+                    <label>単価の単位<select value={priceSettings.unit}
+                      onChange={e=>setDraft({...priceDraft,unitPrice:{...priceSettings,unit:e.target.value as '円'|'万円'}})}>
+                      <option value="円">円</option><option value="万円">万円</option>
+                    </select></label>
+                  </div>
+                  <label>件数KPI<select required value={priceSettings.quantityId}
+                    onChange={e=>setDraft({...priceDraft,unitPrice:{...priceSettings,quantityId:e.target.value}})}>
+                    <option value="">直下のKPIを選択</option>
+                    {priceOptions.map(node=><option key={node.id} value={node.id}>{node.name}（{node.unit}）</option>)}
+                  </select></label>
+                  {!priceOptions.length&&<p>直下に「件」や「社」などの単位のKPIを追加してください。</p>}
+                  <output className="sum-preview">
+                    <span>金額プレビュー</span>
+                    <strong>{pricePreview?.ok&&pricePreview.value!==null?fmt(pricePreview.value)+' '+priceDraft.unit:'—'}</strong>
+                  </output>
+                </fieldset>}
                 {sumDraft&&<fieldset className="sum-fields">
                   <legend>合算するKPI</legend>
                   <p>このKPIの直下にある項目を選択します。円・万円などの金額単位は自動で換算します。</p>
